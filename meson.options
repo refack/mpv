@@ -121,3 +121,10 @@ option('win32-subsystem', type : 'string', value: 'windows', description : 'Wind
 option('html-build', type: 'feature', value: 'disabled', description: 'HTML manual generation')
 option('manpage-build', type: 'feature', value: 'auto', description: 'manpage generation')
 option('pdf-build', type: 'feature', value: 'disabled', description: 'PDF manual generation')
+
+# ffmpeg prebuilt
+option('ffmpeg_prefix', type: 'string', value: '', description: 'Path to prebuilt FFmpeg root (contains include/, lib/, bin/)')
+option('ffmpeg_inc_dir', type: 'string', value: '', description: 'Override FFmpeg include dir; defaults to <ffmpeg_prefix>/include')
+option('ffmpeg_lib_dir', type: 'string', value: '', description: 'Override FFmpeg lib dir; defaults to <ffmpeg_prefix>/lib')
+option('ffmpeg_bin_dir', type: 'string', value: '', description: 'Path to FFmpeg DLL directory; defaults to <ffmpeg_prefix>/bin')
+option('ffmpeg_static', type: 'boolean', value: true, description: 'Prefer static FFmpeg libraries when resolving link')

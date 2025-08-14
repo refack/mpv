@@ -18,18 +18,98 @@ build_root = meson.project_build_root()
 source_root = meson.project_source_root()
 python = find_program('python3')
 
-# ffmpeg
-libavcodec = dependency('libavcodec', version: '>= 60.31.102')
-libavfilter = dependency('libavfilter', version: '>= 9.12.100')
-libavformat = dependency('libavformat', version: '>= 60.16.100')
-libavutil = dependency('libavutil', version: '>= 58.29.100')
-libswresample = dependency('libswresample', version: '>= 4.12.100')
-libswscale = dependency('libswscale', version: '>= 7.5.100')
+fs = import('fs')
 
-libplacebo = dependency('libplacebo', version: '>=6.338.2',
-                default_options: ['default_library=static', 'demos=false'])
+# ffmpeg (prebuilt; link against import libs and optionally stage DLLs)
+ffmpeg_prefix = get_option('ffmpeg_prefix')
+ffmpeg_inc_dir_opt = get_option('ffmpeg_inc_dir')
+ffmpeg_lib_dir_opt = get_option('ffmpeg_lib_dir')
+ffmpeg_bin_dir_opt = get_option('ffmpeg_bin_dir')
+ffmpeg_static = get_option('ffmpeg_static')
 
-libass = dependency('libass', version: '>= 0.12.2')
+# Resolve dirs from options with sensible defaults
+ffmpeg_dir = ffmpeg_prefix != '' ? ffmpeg_prefix : 'E:/scoop/apps/ffmpeg-shared/7.1.1'
+ffmpeg_inc = include_directories(ffmpeg_inc_dir_opt != '' ? ffmpeg_inc_dir_opt : join_paths(ffmpeg_dir, 'include'))
+ffmpeg_lib_dir = ffmpeg_lib_dir_opt != '' ? ffmpeg_lib_dir_opt : join_paths(ffmpeg_dir, 'lib')
+ffmpeg_bin_dir = ffmpeg_bin_dir_opt != '' ? ffmpeg_bin_dir_opt : join_paths(ffmpeg_dir, 'bin')
+
+# Force Meson to look for FFmpeg import libs/DLL import stubs in ffmpeg_lib_dir
+cc_ffmpeg = meson.get_compiler('c')
+
+# When static is requested, ask the compiler to prefer static linkage if available
+static_kw = ffmpeg_static ? {'static': true} : {}
+libavcodec_lib    = cc_ffmpeg.find_library('avcodec',    dirs: [ffmpeg_lib_dir], required: true, static: ffmpeg_static)
+libavfilter_lib   = cc_ffmpeg.find_library('avfilter',   dirs: [ffmpeg_lib_dir], required: true, static: ffmpeg_static)
+libavformat_lib   = cc_ffmpeg.find_library('avformat',   dirs: [ffmpeg_lib_dir], required: true, static: ffmpeg_static)
+libavutil_lib     = cc_ffmpeg.find_library('avutil',     dirs: [ffmpeg_lib_dir], required: true, static: ffmpeg_static)
+libswresample_lib = cc_ffmpeg.find_library('swresample', dirs: [ffmpeg_lib_dir], required: true, static: ffmpeg_static)
+libswscale_lib    = cc_ffmpeg.find_library('swscale',    dirs: [ffmpeg_lib_dir], required: true, static: ffmpeg_static)
+
+# Expose headers + libs as Meson dependencies
+libavcodec    = declare_dependency(include_directories: ffmpeg_inc, dependencies: libavcodec_lib)
+libavfilter   = declare_dependency(include_directories: ffmpeg_inc, dependencies: libavfilter_lib)
+libavformat   = declare_dependency(include_directories: ffmpeg_inc, dependencies: libavformat_lib)
+libavutil     = declare_dependency(include_directories: ffmpeg_inc, dependencies: libavutil_lib)
+libswresample = declare_dependency(include_directories: ffmpeg_inc, dependencies: libswresample_lib)
+libswscale    = declare_dependency(include_directories: ffmpeg_inc, dependencies: libswscale_lib)
+
+dependencies = []
+
+# On Windows with static FFmpeg, add common system libs often required by static archives
+if host_machine.system() == 'windows' and ffmpeg_static
+    win_ffmpeg_static_libs = [
+        cc_ffmpeg.find_library('ws2_32', required: false),
+        cc_ffmpeg.find_library('bcrypt', required: false),
+        cc_ffmpeg.find_library('secur32', required: false),
+        cc_ffmpeg.find_library('psapi', required: false),
+        cc_ffmpeg.find_library('strmiids', required: false),
+        cc_ffmpeg.find_library('oleaut32', required: false),
+    ]
+    foreach l : win_ffmpeg_static_libs
+        if l.found()
+            dependencies += l
+        endif
+    endforeach
+endif
+
+# Collect FFmpeg runtime DLLs and install/copy them next to the executable on Windows
+ffmpeg_runtime_dlls = []
+if host_machine.system() == 'windows'
+    if not ffmpeg_static
+        # Common FFmpeg DLL basenames; adjust as needed for your build
+        ff_dll_names = [
+            'avcodec', 'avfilter', 'avformat', 'avutil', 'swresample', 'swscale',
+        ]
+        foreach n : ff_dll_names
+            candidates = [join_paths(ffmpeg_bin_dir, n + '.dll')]
+            dll_glob = files(join_paths(ffmpeg_bin_dir, n + '-*.dll'))
+            foreach g : dll_glob
+                candidates += g
+            endforeach
+            foreach f : candidates
+                if fs.exists(f)
+                    ffmpeg_runtime_dlls += f
+                    break
+                endif
+            endforeach
+        endforeach
+
+        if ffmpeg_runtime_dlls.length() > 0
+            # Install to bindir for "meson install"
+            install_data(ffmpeg_runtime_dlls, install_dir: get_option('bindir'))
+            # Also stage copies into the build dir so running from build tree works
+            staged_ffmpeg_dlls = []
+            foreach d : ffmpeg_runtime_dlls
+                staged_ffmpeg_dlls += configure_file(input: d, output: fs.name(d), copy: true)
+            endforeach
+        endif
+    endif
+endif
+
+# Discover required third-party libraries that mpv depends on
+# (placed before assembling the dependencies list to ensure variables exist)
+libass = dependency('libass', required: true)
+libplacebo = dependency('libplacebo', required: true)
 
 # the dependency order of libass -> ffmpeg is necessary due to
 # static linking symbol resolution between fontconfig and MinGW
@@ -47,8 +127,8 @@ features = {
     'debug': get_option('debug'),
     'ffmpeg': true,
     'gpl': get_option('gpl'),
-    'libass': true,
-    'libplacebo': true,
+    'libass': libass.found(),
+    'libplacebo': libplacebo.found(),
 }
 
 
@@ -1738,7 +1818,7 @@ if win32
 
     # Unintuitively, this compile operates out of the osdep subdirectory.
     # Hence, these includes are needed.
-    res_includes = [source_root, build_root]
+    res_includes = [source_root, build_root, ffmpeg_inc]
 
     resources = ['etc/mpv-icon-8bit-16x16.png',
                  'etc/mpv-icon-8bit-32x32.png',
